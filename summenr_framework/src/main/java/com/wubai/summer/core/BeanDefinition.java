@@ -7,6 +7,10 @@ package com.wubai.summer.core;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Bean定义：存储Bean的元数据（设计图纸）
@@ -30,10 +34,18 @@ public class BeanDefinition {
     // 工厂方法（用于实例化@Bean的Bean）
     private Method factoryMethod;
 
+    // ========== 新增：XML配置专用字段 ==========
+// XML专用：构造器参数的Bean引用列表（按顺序存储ref，如["orderService", "dataSource"]）
+    private List<String> constructorArgRefs = new ArrayList<>();
+
+    // XML专用：属性注入的Bean引用映射（属性名 → Bean名称，如 {"dataSource": "dataSource"}）
+    private Map<String, String> propertyRefs = new HashMap<>();
+
+
     // 无参构造器
     public BeanDefinition() {}
 
-    // 全参构造器（简化赋值）
+    // 注解版本 全参构造器（简化赋值）
     public BeanDefinition(String beanName, Class<?> beanClass, Object instance, Constructor<?> constructor, String factoryBeanName, Method factoryMethod) {
         this.beanName = beanName;
         this.beanClass = beanClass;
@@ -57,4 +69,21 @@ public class BeanDefinition {
     public Method getFactoryMethod() { return factoryMethod; }
     public void setFactoryMethod(Method factoryMethod) { this.factoryMethod = factoryMethod; }
 
+
+    // ========== 新增：XML字段的Getter/Setter ==========
+    public List<String> getConstructorArgRefs() {
+        return constructorArgRefs;
+    }
+
+    public void setConstructorArgRefs(List<String> constructorArgRefs) {
+        this.constructorArgRefs = constructorArgRefs;
+    }
+
+    public Map<String, String> getPropertyRefs() {
+        return propertyRefs;
+    }
+
+    public void setPropertyRefs(Map<String, String> propertyRefs) {
+        this.propertyRefs = propertyRefs;
+    }
 }

@@ -44,14 +44,14 @@ public class AnnotationConfigApplicationContext {
         ComponentScan componentScan = configClass.getAnnotation(ComponentScan.class);
         String[] scanPackages;
         if (componentScan == null || componentScan.value().length == 0) {
-            // 无注解/无指定包，扫描配置类所在包
+            // 无注解   或为：无指定包，扫描配置类所在包   或为：扫描指定的包
             scanPackages = new String[]{configClass.getPackage().getName()};
         } else {
             // 扫描注解指定的包
             scanPackages = componentScan.value();
         }
 
-        // 2. 遍历所有扫描包，调用ResourceResolver扫描Class
+        // 2. 遍历所有扫描包，调用ResourceResolver扫描Class，得到其所有全限定名
         List<String> allClassNames = new ArrayList<>();
         for (String pkg : scanPackages) {
             ResourceResolver resolver = new ResourceResolver(pkg);

@@ -76,7 +76,7 @@ public class ResourceResolver {
                             .replace(".class", "");
                     classNames.add(className);
                     //设计原因：
-                        // IOC 容器后续需要通过全限定类名（如com.summer.test.UserService）反射创建实例，所以必须把文件路径转换为 Java 规范的类名。
+                    // IOC 容器后续需要通过全限定类名（如com.summer.test.UserService）反射创建实例，所以必须把文件路径转换为 Java 规范的类名。
                 }
             }
         }

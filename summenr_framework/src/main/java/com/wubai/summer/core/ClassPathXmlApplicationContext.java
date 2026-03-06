@@ -5,9 +5,15 @@ package com.wubai.summer.core;
  * @Date:2026/3/517:52
  */
 
+import com.wubai.summer.annotation.Order;
+
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 基于XML配置的ApplicationContext
@@ -18,12 +24,16 @@ import java.util.*;
  */
 public class ClassPathXmlApplicationContext {
     // 复用相同的三个核心缓存
-    private final Map<String, BeanDefinition> beanDefinitionMap = new HashMap<>();
-    private final Map<String, Object> singletonObjects = new HashMap<>();
-    private final Set<String> creatingBeanNames = new HashSet<>();
+    private final Map<String, BeanDefinition> beanDefinitionMap = new ConcurrentHashMap<>();
+    private final Map<String, Object> singletonObjects = new ConcurrentHashMap<>();
+    private final Set<String> creatingBeanNames = ConcurrentHashMap.newKeySet();
+
+    // 存储所有的 BeanPostProcessor
+    private final List<BeanPostProcessor> beanPostProcessors = new ArrayList<>();
 
     /**
      * 构造器：传入XML路径，启动容器
+     *
      * @param xmlPath XML文件路径（相对于ClassPath，如 "beans.xml"）
      */
     public ClassPathXmlApplicationContext(String xmlPath) {
@@ -43,6 +53,27 @@ public class ClassPathXmlApplicationContext {
      * 刷新容器：实例化所有单例Bean
      */
     private void refresh() {
+        // 第一阶段：先实例化所有 BeanPostProcessor
+        for (String beanName : beanDefinitionMap.keySet()) {
+            BeanDefinition beanDef = beanDefinitionMap.get(beanName);
+            if (BeanPostProcessor.class.isAssignableFrom(beanDef.getBeanClass())) {
+                BeanPostProcessor processor = (BeanPostProcessor) getBean(beanName);
+                beanPostProcessors.add(processor);
+                System.out.println("✅ 注册BeanPostProcessor：" + beanName);
+            }
+        }
+        //- BeanPostProcessor 必须先于普通 Bean 实例化
+        //- 这样普通 Bean 才能被 BeanPostProcessor 处理
+
+        // 按 @Order 排序（数字越小，优先级越高）
+        beanPostProcessors.sort((p1, p2) -> {
+            int order1 = getOrder(p1);
+            int order2 = getOrder(p2);
+            return Integer.compare(order1, order2);
+        }); //order1 order2 的顺序和p1，p2一致，就是从小到大
+
+
+        // 第二阶段：实例化其他普通 Bean
         for (String beanName : beanDefinitionMap.keySet()) {
             getBean(beanName);
         }
@@ -53,42 +84,61 @@ public class ClassPathXmlApplicationContext {
      * 与注解方式的区别：依赖按名称获取（getBean），而非按类型（getBeanByType）
      */
     public Object getBean(String beanName) {
-        // 1. 单例池中有则直接返回
-        if (singletonObjects.containsKey(beanName)) {
-            return singletonObjects.get(beanName);
-        }
-
-        // 2. 获取BeanDefinition
-        BeanDefinition beanDef = beanDefinitionMap.get(beanName);
-        if (beanDef == null) {
-            throw new RuntimeException("Bean不存在：" + beanName);
-        }
-
-        // 3. 循环依赖检测
-        if (!creatingBeanNames.add(beanName)) {
-            throw new RuntimeException("检测到循环依赖：" + beanName);
-        }
-
-        System.out.println("🔨 实例化Bean：" + beanName);
-
-        // 4. 实例化Bean
-        Object instance;
-        if (beanDef.getFactoryMethod() == null) {
-            // 普通Bean：构造器实例化（XML方式）
-            instance = instantiateByConstructorXml(beanDef);
+        // 第一次检查：快速路径，无锁
+        Object bean = singletonObjects.get(beanName);
+        if (bean != null) {
+            return bean;
         } else {
-            // 工厂Bean：工厂方法实例化
-            instance = instantiateByFactoryMethod(beanDef);
+            // 获取BeanDefinition
+            BeanDefinition beanDef = beanDefinitionMap.get(beanName);
+            if (beanDef == null) {
+                throw new RuntimeException("Bean不存在：" + beanName);
+            }
+
+            // 同步块：保证只有一个线程创建Bean
+            synchronized (beanDef) {
+                // 第二次检查：防止重复创建
+                bean = singletonObjects.get(beanName);
+                if (bean != null) {
+                    return bean;
+                }
+
+                // 循环依赖检测
+                if (!creatingBeanNames.add(beanName)) {
+                    throw new RuntimeException("检测到循环依赖：" + beanName);
+                }
+
+                System.out.println("🔨 实例化Bean：" + beanName);
+
+                // 实例化Bean
+                Object instance;
+                if (beanDef.getFactoryMethod() == null) {
+                    instance = instantiateByConstructorXml(beanDef);
+                } else {
+                    instance = instantiateByFactoryMethod(beanDef);
+                }
+
+                //初始化 前
+                // 属性注入
+                injectPropertiesXml(instance, beanDef);
+                // ⭐ 应用 BeanPostProcessor（初始化前）
+                Object wrappedBean = applyBeanPostProcessorsBeforeInitialization(instance, beanName);
+
+                // TODO: 这里可以调用 init-method（如果支持）  自定义初始化方法
+
+                // ⭐ 应用 BeanPostProcessor（初始化后）
+                wrappedBean = applyBeanPostProcessorsAfterInitialization(wrappedBean, beanName);
+                //初始化 后
+
+
+                // 放入单例池（注意：放入的是处理后的 Bean）
+                singletonObjects.put(beanName, wrappedBean);
+                creatingBeanNames.remove(beanName);
+
+                return wrappedBean;
+            }
         }
 
-        // 5. 属性注入（XML的<property>标签）
-        injectPropertiesXml(instance, beanDef);
-
-        // 6. 放入单例池
-        singletonObjects.put(beanName, instance);
-        creatingBeanNames.remove(beanName);
-
-        return instance;
     }
 
     /**
@@ -194,6 +244,43 @@ public class ClassPathXmlApplicationContext {
             throw new RuntimeException("多个Bean匹配类型：" + type.getName());
         }
         return (T) getBean(matchNames.get(0));
+    }
+
+
+    /**
+     * 应用所有 BeanPostProcessor 的 postProcessBeforeInitialization
+     */
+    private Object applyBeanPostProcessorsBeforeInitialization(Object bean, String beanName) {
+        Object result = bean;
+        for (BeanPostProcessor processor : beanPostProcessors) {
+            result = processor.postProcessBeforeInitialization(result, beanName);
+            if (result == null) {
+                throw new RuntimeException("BeanPostProcessor 返回了 null：" + processor.getClass().getName());
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 应用所有 BeanPostProcessor 的 postProcessAfterInitialization
+     */
+    private Object applyBeanPostProcessorsAfterInitialization(Object bean, String beanName) {
+        Object result = bean;
+        for (BeanPostProcessor processor : beanPostProcessors) {
+            result = processor.postProcessAfterInitialization(result, beanName);
+            if (result == null) {
+                throw new RuntimeException("BeanPostProcessor 返回了 null：" + processor.getClass().getName());
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 获取 BeanPostProcessor 的 @Order 值
+     */
+    private int getOrder(BeanPostProcessor processor) {
+        Order order = processor.getClass().getAnnotation(Order.class);
+        return order != null ? order.value() : Integer.MAX_VALUE;
     }
 }
 /**

@@ -13,6 +13,7 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /**
@@ -20,11 +21,13 @@ import java.util.stream.Collectors;
  */
 public class AnnotationConfigApplicationContext {
     // 核心缓存1：Bean名称 → BeanDefinition（存储所有Bean的元数据）
-    private final Map<String, BeanDefinition> beanDefinitionMap = new HashMap<>();
+    private final Map<String, BeanDefinition> beanDefinitionMap = new ConcurrentHashMap<>();
     // 核心缓存2：Bean名称 → Bean实例（单例池，存储初始化完成的Bean）
-    private final Map<String, Object> singletonObjects = new HashMap<>();
+    private final Map<String, Object> singletonObjects = new ConcurrentHashMap<>();
     // 正在创建的Bean名称（解决构造器注入的循环依赖，检测后抛异常）
-    private final Set<String> creatingBeanNames = new HashSet<>();
+    private final Set<String> creatingBeanNames = new ConcurrentHashMap<>().newKeySet();
+    // 存储所有的 BeanPostProcessor
+    private final List<BeanPostProcessor> beanPostProcessors = new ArrayList<>();
 
     // 构造器：传入配置类（如AppConfig），启动容器
     public AnnotationConfigApplicationContext(Class<?> configClass) {
@@ -130,6 +133,7 @@ public class AnnotationConfigApplicationContext {
         String className = clazz.getSimpleName();
         return Character.toLowerCase(className.charAt(0)) + className.substring(1);
     }
+
     private String getDefaultBeanName(Method method, String annoValue) {
         if (!annoValue.isEmpty()) return annoValue;
         return method.getName();
@@ -161,9 +165,26 @@ public class AnnotationConfigApplicationContext {
      * 刷新容器：实例化所有单例Bean，执行依赖注入和初始化
      */
     private void refresh() {
-        // 遍历所有BeanDefinition，按名称实例化
+        // 第一阶段：先实例化所有 BeanPostProcessor
         for (String beanName : beanDefinitionMap.keySet()) {
-            getBean(beanName); // 调用getBean触发实例化，后续复用
+            BeanDefinition beanDef = beanDefinitionMap.get(beanName);
+            if (BeanPostProcessor.class.isAssignableFrom(beanDef.getBeanClass())) {
+                BeanPostProcessor processor = (BeanPostProcessor) getBean(beanName);
+                beanPostProcessors.add(processor);
+                System.out.println("✅ 注册BeanPostProcessor：" + beanName);
+            }
+        }
+        // 按 @Order 排序（数字越小，优先级越高）
+        beanPostProcessors.sort((p1, p2) -> {
+            int order1 = getOrder(p1);
+            int order2 = getOrder(p2);
+            return Integer.compare(order1, order2);
+        }); //order1 order2 的顺序和p1，p2一致，就是从小到大
+
+
+        // 第二阶段：实例化其他普通 Bean
+        for (String beanName : beanDefinitionMap.keySet()) {
+            getBean(beanName);
         }
     }
 
@@ -171,39 +192,62 @@ public class AnnotationConfigApplicationContext {
      * 核心方法：根据Bean名称获取Bean实例（不存在则实例化）
      */
     public Object getBean(String beanName) {
-        // 1. 单例池中有则直接返回
-        if (singletonObjects.containsKey(beanName)) {
-            return singletonObjects.get(beanName);
-        }
-        // 2. 无则获取BeanDefinition，检测是否存在
-        BeanDefinition beanDef = beanDefinitionMap.get(beanName);
-        if (beanDef == null) {
-            throw new RuntimeException("Bean不存在：" + beanName);
-        }
-        // 3. 检测循环依赖（构造器注入）
-        if (!creatingBeanNames.add(beanName)) {
-            throw new RuntimeException("检测到循环依赖：" + beanName);
-        }
-
-        // 4. 实例化Bean（分普通Bean和工厂Bean）
-        Object instance;
-        if (beanDef.getFactoryMethod() == null) {
-            // 普通Bean：@Component，用构造器实例化
-            instance = instantiateByConstructor(beanDef); //这个方法会将其所需要的所有依赖的对象注入进去，实现实例化
+        // 1. 单例池中有则直接返回 , 第一次检查
+        Object bean = singletonObjects.get(beanName);
+        if (bean != null) {
+            return bean;
         } else {
-            // 工厂Bean：@Bean，用配置类实例+工厂方法实例化
-            instance = instantiateByFactoryMethod(beanDef);
+            // 2. 无则获取BeanDefinition，检测是否存在
+            BeanDefinition beanDef = beanDefinitionMap.get(beanName);
+            if (beanDef == null) {
+                throw new RuntimeException("Bean不存在：" + beanName);
+            }
+
+            // 同步块：保证只有一个线程创建Bean
+            synchronized (beanDef) {
+                // 第二次检查：防止重复创建
+                bean = singletonObjects.get(beanName);
+                if (bean != null) {
+                    return bean;
+                }
+
+                //-------创建这个单例bean的部分------
+                // 3. 检测循环依赖（构造器注入）
+                if (!creatingBeanNames.add(beanName)) {
+                    throw new RuntimeException("检测到循环依赖：" + beanName);
+                }
+
+                // 4. 实例化Bean（分普通Bean和工厂Bean）
+                Object instance;
+                if (beanDef.getFactoryMethod() == null) {
+                    // 普通Bean：@Component，用构造器实例化
+                    instance = instantiateByConstructor(beanDef); //这个方法会将其所需要的所有依赖的对象注入进去，实现实例化
+                } else {
+                    // 工厂Bean：@Bean，用配置类实例+工厂方法实例化
+                    instance = instantiateByFactoryMethod(beanDef);
+                }
+                beanDef.setInstance(instance);
+
+                // 5. 依赖注入：Setter方法/字段注入（@Autowired）
+                autowireBean(instance);
+
+                // 6. 应用 BeanPostProcessor（初始化前）
+                Object wrappedBean = applyBeanPostProcessorsBeforeInitialization(instance, beanName);
+
+                // TODO: 这里可以调用 init-method（如果支持）
+
+                // 7. 应用 BeanPostProcessor（初始化后）
+                wrappedBean = applyBeanPostProcessorsAfterInitialization(wrappedBean, beanName);
+
+                // 8. 放入单例池，移除创建中标记（注意：放入的是处理后的 Bean）
+                singletonObjects.put(beanName, wrappedBean);
+                creatingBeanNames.remove(beanName);
+
+                return wrappedBean;
+            }
         }
-        beanDef.setInstance(instance);
 
-        // 5. 依赖注入：Setter方法/字段注入（@Autowired）
-        autowireBean(instance);
 
-        // 6. 放入单例池，移除创建中标记
-        singletonObjects.put(beanName, instance);
-        creatingBeanNames.remove(beanName);
-
-        return instance;
     }
 
     /**
@@ -260,7 +304,7 @@ public class AnnotationConfigApplicationContext {
                 paramValues[i] = getBeanByType(paramTypes[i]);
             }
             // 反射调用工厂方法创建实例
-                //为什么要返回获取配置类的实例：@bean标注的方法是实例方法，因此在beanDefinitionMap里面的实例Method，无法自行反射调用（实例要穿所属类别，静态才能null），所以才需要获取其配置类的实例来反射调用
+            //为什么要返回获取配置类的实例：@bean标注的方法是实例方法，因此在beanDefinitionMap里面的实例Method，无法自行反射调用（实例要穿所属类别，静态才能null），所以才需要获取其配置类的实例来反射调用
             return factoryMethod.invoke(factoryBean, paramValues);
         } catch (Exception e) {
             throw new RuntimeException("工厂方法实例化Bean失败：" + beanDef.getBeanName(), e);
@@ -337,6 +381,7 @@ public class AnnotationConfigApplicationContext {
         }
         return false;
     }
+
     // 新增：获取@Component的value（兼容元注解）
     private String getComponentValue(Class<?> clazz) {
         // 1. 直接标注@Component
@@ -352,5 +397,41 @@ public class AnnotationConfigApplicationContext {
             }
         }
         return "";
+    }
+
+    /**
+     * 应用所有 BeanPostProcessor 的 postProcessBeforeInitialization
+     */
+    private Object applyBeanPostProcessorsBeforeInitialization(Object bean, String beanName) {
+        Object result = bean;
+        for (BeanPostProcessor processor : beanPostProcessors) {
+            result = processor.postProcessBeforeInitialization(result, beanName);
+            if (result == null) {
+                throw new RuntimeException("BeanPostProcessor 返回了 null：" + processor.getClass().getName());
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 应用所有 BeanPostProcessor 的 postProcessAfterInitialization
+     */
+    private Object applyBeanPostProcessorsAfterInitialization(Object bean, String beanName) {
+        Object result = bean;
+        for (BeanPostProcessor processor : beanPostProcessors) {
+            result = processor.postProcessAfterInitialization(result, beanName);
+            if (result == null) {
+                throw new RuntimeException("BeanPostProcessor 返回了 null：" + processor.getClass().getName());
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 获取 BeanPostProcessor 的 @Order 值
+     */
+    private int getOrder(BeanPostProcessor processor) {
+        Order order = processor.getClass().getAnnotation(Order.class);
+        return order != null ? order.value() : Integer.MAX_VALUE;
     }
 }

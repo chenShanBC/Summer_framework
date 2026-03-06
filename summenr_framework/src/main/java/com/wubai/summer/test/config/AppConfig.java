@@ -10,7 +10,7 @@ import com.wubai.summer.annotation.Configuration;
  */
 // 配置类：包扫描 + 第三方Bean注册
 @Configuration
-@ComponentScan("com.wubai.summer.test") // 扫描包（com.wubai.summer.test）
+@ComponentScan({"com.wubai.summer.test","com.wubai.summer.core"}) // 扫描包（com.wubai.summer）
 public class AppConfig {
     // 注册第三方Bean：DataSource
     @Bean

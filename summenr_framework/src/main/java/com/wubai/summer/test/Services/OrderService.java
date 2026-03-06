@@ -9,13 +9,13 @@ import com.wubai.summer.test.pojo.User;
  * @Date:2026/3/515:13
  */
 @Component
-public class OrderService {
-    private UserService userService;
+public class OrderService implements IOrderService {
+    private IUserService userService;  // 改为接口类型
     private User user;
 
     // 构造器注入（带@Autowired，优先选择）
     @Autowired
-    public OrderService(UserService userService) {
+    public OrderService(IUserService userService) {  // 参数改为接口类型
         this.userService = userService;
     }
 

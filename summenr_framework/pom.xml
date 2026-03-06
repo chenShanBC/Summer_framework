@@ -13,7 +13,21 @@
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
-
+    <dependencies>
+        <!-- ByteBuddy 核心依赖 -->
+        <dependency>
+            <groupId>net.bytebuddy</groupId>
+            <artifactId>byte-buddy</artifactId>
+            <version>1.14.12</version>
+        </dependency>
+        <!-- 可选：ByteBuddy 代理工具类 -->
+        <dependency>
+            <groupId>net.bytebuddy</groupId>
+            <artifactId>byte-buddy-agent</artifactId>
+            <version>1.14.12</version>
+            <scope>runtime</scope>
+        </dependency>
+    </dependencies>
     <build>
         <plugins>
             <plugin>

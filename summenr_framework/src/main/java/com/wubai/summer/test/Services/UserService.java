@@ -10,7 +10,7 @@ import com.wubai.summer.test.pojo.User;
  */
 
 @Component
-public class UserService {
+public class UserService implements IUserService {
     @Autowired
     private User user;
 

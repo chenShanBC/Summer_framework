@@ -373,7 +373,7 @@ public class AnnotationConfigApplicationContext {
         if (clazz.getAnnotation(Component.class) != null) {
             return true;
         }
-        // 2. 遍历所有注解，检查是否有注解标注了@Component（元注解）
+        // 2. 遍历所有注解，检查是否有注解内部标注了@Component（元注解）
         for (Annotation anno : clazz.getAnnotations()) {
             if (anno.annotationType().getAnnotation(Component.class) != null) {
                 return true;
